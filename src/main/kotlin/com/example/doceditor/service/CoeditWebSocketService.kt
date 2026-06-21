@@ -13,28 +13,40 @@ import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.collections.set
 
+data class CollaboratorSession(
+    val sessionId: String,
+    val userId: UUID,
+    val userName: String
+)
+
 @Service
 class CoeditWebSocketService (
     private val messagingTemplate: SimpMessagingTemplate
 ) {
-    private val activeUsers = ConcurrentHashMap<UUID, ConcurrentHashMap<UUID, String>>()
+    private val activeUsers = ConcurrentHashMap<UUID, ConcurrentHashMap<String, CollaboratorSession>>()
+
     fun handleCoeditMessage (
         documentId: UUID,
         message: CoeditMessage,
         headerAccessor: SimpMessageHeaderAccessor
     ) {
         val userMap = activeUsers.computeIfAbsent(documentId) { ConcurrentHashMap() }
+        val sessionId = headerAccessor.sessionId ?: return
 
         when (message.type) {
             CoeditMessageType.JOIN -> {
-                userMap[message.senderId] = message.senderName
+                userMap[sessionId] = CollaboratorSession(
+                    sessionId = sessionId,
+                    userId = message.senderId,
+                    userName = message.senderName
+                )
                 headerAccessor.sessionAttributes?.put("userId", message.senderId.toString())
                 headerAccessor.sessionAttributes?.put("documentId", documentId.toString())
                 headerAccessor.sessionAttributes?.put("senderName", message.senderName)
                 broadcastActiveUsers(documentId)
             }
             CoeditMessageType.LEAVE -> {
-                userMap.remove(message.senderId)
+                userMap.remove(sessionId)
                 broadcastActiveUsers(documentId)
             }
             CoeditMessageType.EDIT -> {
@@ -47,26 +59,26 @@ class CoeditWebSocketService (
     }
 
     private fun broadcastActiveUsers(documentId: UUID) {
-        val users = activeUsers[documentId]?.map { (id, name) ->
-            mapOf("id" to id.toString(), "name" to name)
-        } ?: emptyList()
+        val sessions = activeUsers[documentId]?.values ?: emptyList()
+        // Group sessions by userId to get a list of unique active users
+        val uniqueUsers = sessions.groupBy { it.userId }.map { (userId, userSessions) ->
+            mapOf("id" to userId.toString(), "name" to userSessions.first().userName)
+        }
 
-        messagingTemplate.convertAndSend("/topic/documents/$documentId/presence", users)
+        messagingTemplate.convertAndSend("/topic/documents/$documentId/presence", uniqueUsers)
     }
 
     @EventListener
     fun handleSessionDisconnect(event: SessionDisconnectEvent) {
+        val sessionId = event.sessionId
         val headerAccessor = SimpMessageHeaderAccessor.wrap(event.message)
-        val userIdStr = headerAccessor.sessionAttributes?.get("userId") as? String
         val docIdStr = headerAccessor.sessionAttributes?.get("documentId") as? String
 
-        if (userIdStr != null && docIdStr != null) {
-            val userId = UUID.fromString(userIdStr)
+        if (docIdStr != null) {
             val documentId = UUID.fromString(docIdStr)
-
             val userMap = activeUsers[documentId]
             if (userMap != null) {
-                userMap.remove(userId)
+                userMap.remove(sessionId)
                 if (userMap.isEmpty()) {
                     activeUsers.remove(documentId)
                 } else {
