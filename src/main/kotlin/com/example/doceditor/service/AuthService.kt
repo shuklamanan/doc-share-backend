@@ -12,6 +12,7 @@ import com.example.doceditor.security.UserDetailsImpl
 import jakarta.servlet.http.Cookie
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.slf4j.LoggerFactory
 import org.springframework.http.ResponseEntity
 import org.springframework.security.authentication.AuthenticationManager
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
@@ -26,12 +27,15 @@ class AuthService(
     private val passwordEncoder: PasswordEncoder,
     private val jwtUtils: JwtUtils,
 ) {
+    private val logger = LoggerFactory.getLogger(AuthService::class.java)
     val refreshTokenCookieKey = "refreshToken"
 
     fun userRegistration (
         req: SignupRequest,
     ): ResponseEntity<MessageResponse> {
+        logger.info("[Auth] Registration request received for email: ${req.email}, name: ${req.fullName}")
         if (userRepository.existsByEmail(req.email)) {
+            logger.warn("[Auth] Registration failed: Email ${req.email} is already in use!")
             return ResponseEntity
                 .badRequest()
                 .body(MessageResponse("Error: Email is already in use!"))
@@ -44,6 +48,7 @@ class AuthService(
         )
 
         userRepository.save(user)
+        logger.info("[Auth] User registered successfully with email: ${req.email}, name: ${req.fullName}")
         return ResponseEntity.ok(MessageResponse("User registered successfully!"))
     }
 
@@ -51,6 +56,7 @@ class AuthService(
         loginRequest: LoginRequest,
         response: HttpServletResponse
     ): ResponseEntity<JwtResponse> {
+        logger.info("[Auth] Login request received for email: ${loginRequest.email}")
         val authentication = authenticationManager.authenticate(
             UsernamePasswordAuthenticationToken(loginRequest.email, loginRequest.password)
         )
@@ -63,6 +69,7 @@ class AuthService(
         // Set refresh token as HttpOnly secure cookie
         addRefreshTokenCookie(response, refreshToken)
 
+        logger.info("[Auth] User logged in successfully: id: ${userDetails.id}, email: ${userDetails.username}, name: ${userDetails.fullName}")
         return ResponseEntity.ok(
             JwtResponse(
                 accessToken = accessToken,
@@ -96,12 +103,14 @@ class AuthService(
             ?.value
 
         if (refreshToken.isNullOrBlank()) {
+            logger.warn("[Auth] Token refresh failed: No refresh token cookie found")
             return ResponseEntity.status(401)
                 .body(MessageResponse("Error: No refresh token cookie found"))
         }
 
         // Validate the refresh token JWT
         if (!jwtUtils.validateJwtToken(refreshToken)) {
+            logger.warn("[Auth] Token refresh failed: Refresh token is invalid or expired")
             // Clear the invalid cookie
             clearRefreshTokenCookie(response)
             return ResponseEntity.status(401)
@@ -115,14 +124,15 @@ class AuthService(
         // Rotate refresh token cookie
         addRefreshTokenCookie(response, newRefreshToken)
 
+        logger.info("[Auth] Access token successfully refreshed for user: $username")
         return ResponseEntity.ok(TokenRefreshResponse(accessToken = newAccessToken))
     }
-
 
     fun logout (
         response: HttpServletResponse
     ): ResponseEntity<MessageResponse> {
         clearRefreshTokenCookie(response)
+        logger.info("[Auth] User logged out successfully and refresh token cookie cleared")
         return ResponseEntity.ok(MessageResponse("Log out successful!"))
     }
 

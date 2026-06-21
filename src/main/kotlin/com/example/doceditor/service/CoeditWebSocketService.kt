@@ -2,6 +2,7 @@ package com.example.doceditor.service
 
 import com.example.doceditor.dtos.CoeditMessage
 import com.example.doceditor.enums.CoeditMessageType
+import org.slf4j.LoggerFactory
 import org.springframework.context.event.EventListener
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor
 import org.springframework.messaging.simp.SimpMessagingTemplate
@@ -9,9 +10,6 @@ import org.springframework.stereotype.Service
 import org.springframework.web.socket.messaging.SessionDisconnectEvent
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.collections.component1
-import kotlin.collections.component2
-import kotlin.collections.set
 
 data class CollaboratorSession(
     val sessionId: String,
@@ -23,6 +21,7 @@ data class CollaboratorSession(
 class CoeditWebSocketService (
     private val messagingTemplate: SimpMessagingTemplate
 ) {
+    private val logger = LoggerFactory.getLogger(CoeditWebSocketService::class.java)
     private val activeUsers = ConcurrentHashMap<UUID, ConcurrentHashMap<String, CollaboratorSession>>()
 
     fun handleCoeditMessage (
@@ -35,6 +34,7 @@ class CoeditWebSocketService (
 
         when (message.type) {
             CoeditMessageType.JOIN -> {
+                logger.info("[WebSocket] User '${message.senderName}' (${message.senderId}) JOINED session for document $documentId (Session ID: $sessionId)")
                 userMap[sessionId] = CollaboratorSession(
                     sessionId = sessionId,
                     userId = message.senderId,
@@ -46,13 +46,16 @@ class CoeditWebSocketService (
                 broadcastActiveUsers(documentId)
             }
             CoeditMessageType.LEAVE -> {
+                logger.info("[WebSocket] User '${message.senderName}' (${message.senderId}) LEFT session for document $documentId (Session ID: $sessionId)")
                 userMap.remove(sessionId)
                 broadcastActiveUsers(documentId)
             }
             CoeditMessageType.EDIT -> {
+                logger.info("[WebSocket] User '${message.senderName}' (${message.senderId}) EDITED content of document $documentId")
                 messagingTemplate.convertAndSend("/topic/documents/$documentId", message)
             }
             CoeditMessageType.CURSOR -> {
+                logger.info("[WebSocket] User '${message.senderName}' (${message.senderId}) updated cursor position in document $documentId")
                 messagingTemplate.convertAndSend("/topic/documents/$documentId", message)
             }
         }
@@ -73,9 +76,12 @@ class CoeditWebSocketService (
         val sessionId = event.sessionId
         val headerAccessor = SimpMessageHeaderAccessor.wrap(event.message)
         val docIdStr = headerAccessor.sessionAttributes?.get("documentId") as? String
+        val senderName = headerAccessor.sessionAttributes?.get("senderName") as? String ?: "Unknown"
+        val userIdStr = headerAccessor.sessionAttributes?.get("userId") as? String ?: "Unknown"
 
         if (docIdStr != null) {
             val documentId = UUID.fromString(docIdStr)
+            logger.info("[WebSocket] Session disconnected: '$senderName' ($userIdStr) left document $documentId (Session ID: $sessionId)")
             val userMap = activeUsers[documentId]
             if (userMap != null) {
                 userMap.remove(sessionId)
